@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -25,6 +25,7 @@ from inference.agent.action_names import (
     to_model_action,
     undo_exposure_mode,
 )
+from inference.agent.knowledge_store import load_knowledge, write_knowledge
 from inference.agent.noop_repeat_guard import NoopRepeatGuard, action_signature
 from inference.agent.priority_scheduler import (
     PrioritySnapshot,
@@ -313,7 +314,7 @@ _RESPONSE_META_MAX_CHARS = 4000
 _PYTHON_TOOL_DESCRIPTION = (
     "Run one ephemeral Python snippet against preloaded game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_call_result`, `frame_diff`, "
+    "`valid_actions`, `last_action_call_result`, `frame_diff`, `knowledge`, "
     "and `action(actions)` for executing one or more real environment actions. "
     "Frames expose `.grid` (immutable numeric rows), `.cell(row,col)`, `.crop(r0,c0,r1,c1)` with half-open bounds, "
     "`.ascii`, `.segmentation4`, `.segmentation8`, `.step`, `.level`, and `.shape`. "
@@ -323,6 +324,7 @@ _PYTHON_TOOL_DESCRIPTION = (
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, compare `previous_frame` to `current_frame` or use `last_transition.before_frame` and `.after_frame`. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
+    "`knowledge.summary()` gives the compact structured memory; use `knowledge.hypotheses` for reusable claims and evidence, and `knowledge.predictions` for measurable expectations recorded before exploratory actions. Knowledge persists across Python calls. Level-scoped hypotheses are archived at level change; game-scoped hypotheses become `carried` until revalidated. "
     "Use `print(...)` for compact output or assign final data to `result`."
 )
 
@@ -5141,10 +5143,11 @@ class ToolAgent:
             )
         lines.extend(
             [
-                "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_call_result`, `frame_diff(before, after)`, and `action(actions)`.",
+                "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_call_result`, `frame_diff(before, after)`, `knowledge`, and `action(actions)`.",
                 "Exact numeric board data is available through `current_frame.grid`, `current_frame.cell(row, col)`, and `current_frame.crop(r0, c0, r1, c1)`; `.grid` and `.crop(...)` are immutable tuple-based views.",
                 "Keep tool output compact: use `current_frame.segmentation4` as the normal object view. Use `current_frame.segmentation8` only when diagonal corner contact is specifically relevant, and never compare or combine node IDs across the two views. Use `.grid`, `.cell(...)`, or `.crop(...)` for exact numeric evidence; use `.ascii` only for compact visual inspection; never print full boards.",
                 "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
+                "Use `knowledge.summary()` to inspect structured memory. Record only claims worth reusing in `knowledge.hypotheses`; before an informative exploratory action, record a measurable expectation in `knowledge.predictions`, then evaluate or resolve it from the observed result. Default claims to level scope and promote only mechanics that transfer across levels.",
             ]
         )
         # Upstream states four things about the world model here, and with
@@ -5768,6 +5771,10 @@ class ToolAgent:
 
         current_frame, history_entries = load_runtime_state(state_path)
         valid_actions = list(_normalize_valid_actions(self._current_valid_actions))
+        knowledge_path = state_path.with_name(f"{state_path.stem}_knowledge.json")
+        knowledge_state = load_knowledge(
+            knowledge_path, level=current_frame.level if current_frame is not None else 1
+        )
 
         def _serialized_runtime_state(
             *,
@@ -5788,6 +5795,7 @@ class ToolAgent:
             return {
                 "current_frame": current_frame_payload,
                 "history": _ascii_history_view_payload(refreshed_history),
+                "knowledge": knowledge_state,
                 "valid_actions": sanitized_actions,
                 "death_ledger": (
                     self._death_ledger_payload()
@@ -5945,6 +5953,11 @@ class ToolAgent:
             retain_imports=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_IMPORTS", False),
             repair_hints=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_REPAIR_HINTS", False),
         )
+
+        returned_knowledge = sandbox_result.get("knowledge_state")
+        if isinstance(returned_knowledge, dict):
+            write_knowledge(knowledge_path, returned_knowledge)
+            knowledge_state = returned_knowledge
 
         action_results = [
             item

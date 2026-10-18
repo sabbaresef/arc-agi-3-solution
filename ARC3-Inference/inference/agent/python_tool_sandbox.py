@@ -16,13 +16,15 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from inference.agent import knowledge_runtime as _knowledge_runtime
 from inference.utils import frame_diff as _frame_diff_module
 from inference.utils import retained_functions as _retained_functions
 from inference.utils import segmentation as _segmentation
 from inference.utils.grid_utils import ARC_COLOR_CHARS
 
-_SANDBOX_BOOTSTRAP = textwrap.dedent(
-    r"""
+_SANDBOX_BOOTSTRAP = (
+    textwrap.dedent(
+        r"""
     import ast
     import builtins
     import contextlib
@@ -44,6 +46,8 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
     __FRAME_DIFF_SOURCE__
 
     __RETAINED_FUNCTIONS_SOURCE__
+
+    __KNOWLEDGE_RUNTIME_SOURCE__
 
     HOST_STDOUT = sys.stdout
 
@@ -676,7 +680,15 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             _animation_views.extend((runtime_globals["last_animation_frames"],
                                      runtime_globals["last_animation_timeline"]))
 
-        _refresh_state(initial.get("state") or {})
+        _initial_state = initial.get("state") or {}
+        _current_payload = _initial_state.get("current_frame") or {}
+        knowledge = KnowledgeView(
+            _initial_state.get("knowledge"),
+            level=_current_payload.get("level", 1),
+            frame_diff_fn=frame_diff,
+        )
+        runtime_globals["knowledge"] = knowledge
+        _refresh_state(_initial_state)
 
         _persistence_enabled = bool(initial.get("persistence_enabled"))
         _retention_options = {
@@ -740,6 +752,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
                     "stdout": stdout.getvalue(),
                     "result": _json_safe(runtime_globals.get("result")),
                     "action_results": _json_safe(action_results),
+                    "knowledge_state": _json_safe(knowledge.export()),
                 }
             )
         except (
@@ -764,6 +777,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
                     "error": _sanitize_exception(exc),
                     "stdout": stdout.getvalue(),
                     "action_results": _json_safe(action_results),
+                    "knowledge_state": _json_safe(knowledge.export()),
                 }
             )
 
@@ -771,10 +785,11 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
     if __name__ == "__main__":
         main()
     """
-).replace("__RETAINED_FUNCTIONS_SOURCE__\n", inspect.getsource(_retained_functions)).replace(
-    "__SEGMENTATION_SOURCE__\n", inspect.getsource(_segmentation)
-).replace(
-    "__FRAME_DIFF_SOURCE__\n", inspect.getsource(_frame_diff_module)
+    )
+    .replace("__KNOWLEDGE_RUNTIME_SOURCE__\n", inspect.getsource(_knowledge_runtime))
+    .replace("__RETAINED_FUNCTIONS_SOURCE__\n", inspect.getsource(_retained_functions))
+    .replace("__SEGMENTATION_SOURCE__\n", inspect.getsource(_segmentation))
+    .replace("__FRAME_DIFF_SOURCE__\n", inspect.getsource(_frame_diff_module))
 )
 
 
@@ -999,6 +1014,7 @@ def run_sandboxed_python(
                     "error": str(message.get("error", "") or ""),
                     "action_results": list(message.get("action_results") or host_action_results),
                     "keepable_functions": list(message.get("keepable_functions") or []),
+                    "knowledge_state": message.get("knowledge_state"),
                     **({"retention_rejected": message.get("retention_rejected", [])}
                        if kept_functions is not None else {}),
                 }
