@@ -309,17 +309,21 @@ _DIFF_IMAGE = _get_env_bool("ARC3_DIFF_IMAGE", False)
 _RESPONSE_META_MAX_CHARS = 4000
 
 _PYTHON_TOOL_DESCRIPTION = (
-    "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
+    "Run one ephemeral Python snippet against preloaded game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_call_result`, "
+    "`valid_actions`, `last_action_call_result`, `frame_diff`, "
     "and `action(actions)` for executing one or more real environment actions. "
-    "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape` (a `(rows, cols)` tuple); "
+    "Frames expose `.grid` (immutable numeric rows), `.cell(row,col)`, `.crop(r0,c0,r1,c1)` with half-open bounds, "
+    "`.ascii`, `.segmentation4`, `.segmentation8`, `.step`, `.level`, and `.shape`. "
+    "Always use `.segmentation4` as the normal object view; it joins same-color cells only through shared edges. "
+    "Use `.segmentation8` only for the exceptional case where diagonal corner contact should count. Never merge or compare node ids between the two views. "
+    "`frame_diff()` returns exact `changed_cells`, `changed_bbox`, and `color_transitions`; its object-event lists are derived from the default `.segmentation4` and may be ambiguous when components repeat. "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, compare `previous_frame` to `current_frame` or use `last_transition.before_frame` and `.after_frame`. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
-    "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
     "Use `print(...)` for compact output or assign final data to `result`."
 )
+
 
 def _normalize_valid_actions(valid_actions: list[str] | None) -> list[str]:
     names: list[str] = []
