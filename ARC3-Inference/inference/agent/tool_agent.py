@@ -1298,20 +1298,40 @@ def _resume_diff_image_enabled() -> bool:
     return _get_env_bool("ARC3_RESUME_DIFF_IMAGE", False)
 
 
+_REASONING_EFFORT_LEVELS = ("low", "medium", "xhigh")
+
+
+def _reasoning_effort_default() -> str:
+    """Base reasoning effort sent on every request outside fallback mode.
+
+    The current model accepts only low, medium and xhigh. Invalid or empty
+    values fall back to medium so a Kaggle run never silently changes behaviour
+    by inheriting a server-side default.
+    """
+    raw = os.environ.get("ARC3_REASONING_EFFORT", "medium").strip().lower()
+    if raw in _REASONING_EFFORT_LEVELS:
+        return raw
+    return "medium"
+
+
 def _reasoning_effort_ladder() -> list[str]:
-    """Reduced reasoning-effort levels to step down through after a truncated
-    generation, e.g. "medium,low".
+    """Reasoning-effort levels used after consecutive truncated generations.
 
-    A reply cut off at the output ceiling is wasted twice over: the tokens are
-    spent, and if the cut lands inside a tool call the turn produces nothing
-    callable. Rather than accommodating long generations with a bigger ceiling,
-    this asks the model for less deliberation until it completes a turn -
-    stepping one rung down per truncation and resetting once an action
-    executes, which is the evidence that the turn recovered.
-
-    Empty (default) disables the behaviour entirely."""
-    raw = os.environ.get("ARC3_REASONING_EFFORT_LADDER", "").strip()
-    return [level.strip() for level in raw.split(",") if level.strip()]
+    The base effort is controlled separately by ARC3_REASONING_EFFORT. Each
+    truncation advances one rung; a successful action resets fallback mode and
+    restores the base effort. Only levels supported by the current model are
+    retained. Empty disables truncation fallback without disabling the base
+    effort.
+    """
+    raw = os.environ.get("ARC3_REASONING_EFFORT_LADDER", "low").strip().lower()
+    if not raw:
+        return []
+    levels: list[str] = []
+    for item in raw.split(","):
+        level = item.strip()
+        if level in _REASONING_EFFORT_LEVELS and level not in levels:
+            levels.append(level)
+    return levels
 
 
 def _preserve_thinking_kwarg() -> bool | None:
@@ -5211,8 +5231,11 @@ class ToolAgent:
             kwargs["preserve_thinking"] = preserve_thinking
         ladder = _reasoning_effort_ladder()
         rung = getattr(self, "_reasoning_effort_rung", -1)
-        if ladder and 0 <= rung < len(ladder):
-            kwargs["reasoning_effort"] = ladder[rung]
+        kwargs["reasoning_effort"] = (
+            ladder[rung]
+            if ladder and 0 <= rung < len(ladder)
+            else _reasoning_effort_default()
+        )
         return kwargs
 
     def _chat_completion(
