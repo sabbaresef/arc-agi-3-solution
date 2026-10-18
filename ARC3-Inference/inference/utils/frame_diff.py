@@ -92,8 +92,23 @@ def compute_frame_diff(grid_a, grid_b, nodes_a, nodes_b, max_group_match=None):
         for c, (va, vb) in enumerate(zip(row_a, row_b)):
             if va != vb:
                 changed.add((r, c))
+    exact_changes = [
+        {"row": r, "col": c, "before": grid_a[r][c], "after": grid_b[r][c]}
+        for r, c in sorted(changed)
+    ]
+    changed_bbox = None
+    color_transitions = {}
+    if changed:
+        changed_bbox = [
+            min(r for r, _ in changed), min(c for _, c in changed),
+            max(r for r, _ in changed), max(c for _, c in changed),
+        ]
+        for item in exact_changes:
+            key = f"{item['before']}>{item['after']}"
+            color_transitions[key] = color_transitions.get(key, 0) + 1
     if not changed:
-        return {"changed_cell_count": 0, "moved": [], "rotated": [],
+        return {"changed_cell_count": 0, "changed_cells": [], "changed_bbox": None,
+                "color_transitions": {}, "moved": [], "rotated": [],
                 "appeared": [], "disappeared": [],
                 "changed_color": [], "resized": []}
 
@@ -301,7 +316,11 @@ def compute_frame_diff(grid_a, grid_b, nodes_a, nodes_b, max_group_match=None):
                         "after_hash": new.get("hash")})
     disappeared = [entry for index, entry in enumerate(disappeared) if index not in used_gone]
     appeared = [entry for index, entry in enumerate(appeared) if index not in used_new]
-    return {"changed_cell_count": len(changed), "moved": moved,
+    return {"changed_cell_count": len(changed),
+            "changed_cells": exact_changes,
+            "changed_bbox": changed_bbox,
+            "color_transitions": color_transitions,
+            "moved": moved,
             "rotated": rotated,
             "appeared": appeared, "disappeared": disappeared,
             "changed_color": changed_color, "resized": resized}

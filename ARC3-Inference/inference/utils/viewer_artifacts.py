@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 _VIEWER_DATA_SUFFIX = "_viewer_data.json"
 _RAW_EVENTS_SUFFIX = "_events.json.gz"
 _RAW_EVENTS_JSONL_SUFFIX = "_events.jsonl"

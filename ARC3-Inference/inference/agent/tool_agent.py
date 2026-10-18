@@ -3,60 +3,68 @@ from __future__ import annotations
 
 import base64
 import heapq
-import threading
 import json
 import logging
 import os
 import random
 import re
+import threading
 import time
-from functools import lru_cache
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import requests
 
+from inference.agent.action_names import (
+    reset_exposed,
+    to_engine_action,
+    to_model_action,
+    undo_exposure_mode,
+)
 from inference.agent.noop_repeat_guard import NoopRepeatGuard, action_signature
 from inference.agent.priority_scheduler import (
-    ProgressPace, PrioritySnapshot, parse_total_levels, priority_value,
+    PrioritySnapshot,
+    ProgressPace,
+    parse_total_levels,
+    priority_value,
 )
-from inference.utils.animation import (
-    _transient_cells as _animation_transient_cells,
-    build_animation_frames,
-    build_animation_view,
-    describe_animation,
-)
-from inference.agent.action_names import reset_exposed, to_engine_action, to_model_action, undo_exposure_mode
-from inference.utils.retained_functions import function_signature
 from inference.agent.prompts import (
-    apply_level_transfer_system_guidance,
-    LEVEL_START_USER_PROMPT,
-    COMPACT_TOOL_SESSION_ADDENDUM,
-    PERSISTENT_FUNCTIONS_LINE,
-    EPHEMERAL_FUNCTIONS_LINE,
-    SUMMARY_REQUEST_PROMPT,
-    PREFER_TOOL_CALLS_LINE,
-    GAME_OVERVIEW_ADDENDUM,
-    WORLD_MODEL_ADDENDUM,
-    WORLD_MODEL_FREE_ADDENDUM,
-    FRAME_DIFF_HINT_ADDENDUM,
-    STEP_VERIFICATION_ADDENDUM,
-    PYTHON_ADDENDUM_HEAD,
-    PYTHON_ADDENDUM_TAIL,
-    GAMEPLAY_CHANGED_ADDENDUM,
-    STRUCTURED_RUNTIME_STATE_ADDENDUM,
+    ACTION_INFO_ADDENDUM,
     ANIMATION_ADDENDUM,
     ANIMATION_ADDENDUM_TIMELINE,
+    COMPACT_TOOL_SESSION_ADDENDUM,
+    EPHEMERAL_FUNCTIONS_LINE,
+    FRAME_DIFF_HINT_ADDENDUM,
+    GAME_OVERVIEW_ADDENDUM,
+    GAMEPLAY_CHANGED_ADDENDUM,
+    LEVEL_START_USER_PROMPT,
     MULTIMODAL_CONTEXT_ADDENDUM,
-    TOOL_CALL_FORMAT_GUIDANCE,
-    VISUAL_GAME_ADDENDUM,
-    ACTION_INFO_ADDENDUM,
-    UNDO_INFO_ADDENDUM,
+    PERSISTENT_FUNCTIONS_LINE,
+    PREFER_TOOL_CALLS_LINE,
+    PYTHON_ADDENDUM_HEAD,
+    PYTHON_ADDENDUM_TAIL,
     RESET_INFO_ADDENDUM,
+    STEP_VERIFICATION_ADDENDUM,
+    STRUCTURED_RUNTIME_STATE_ADDENDUM,
+    SUMMARY_REQUEST_PROMPT,
+    TOOL_CALL_FORMAT_GUIDANCE,
+    UNDO_INFO_ADDENDUM,
+    VISUAL_GAME_ADDENDUM,
+    WORLD_MODEL_ADDENDUM,
+    WORLD_MODEL_FREE_ADDENDUM,
+    apply_level_transfer_system_guidance,
 )
-
+from inference.agent.python_tool_sandbox import run_sandboxed_python
+from inference.agent.runtime_state import (
+    RUNTIME_STATE_FILENAME,
+    Frame,
+    HistoryEntry,
+    load_runtime_state,
+)
 from inference.agent.vision_context import (
     animation_composite_part,
     animation_death_image_mode,
@@ -65,14 +73,20 @@ from inference.agent.vision_context import (
     current_grid_image_enabled,
     current_grid_image_part,
 )
-
-from inference.agent.python_tool_sandbox import run_sandboxed_python
-from inference.agent.runtime_state import Frame, HistoryEntry, RUNTIME_STATE_FILENAME, load_runtime_state
+from inference.utils.animation import (
+    _transient_cells as _animation_transient_cells,
+)
+from inference.utils.animation import (
+    build_animation_frames,
+    build_animation_view,
+    describe_animation,
+)
 from inference.utils.openai_compat import (
     assemble_streamed_chat_response,
     build_chat_payload,
     build_headers,
 )
+from inference.utils.retained_functions import function_signature
 
 log = logging.getLogger(__name__)
 

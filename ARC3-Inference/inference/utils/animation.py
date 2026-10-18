@@ -16,8 +16,10 @@ nothing is missing.
 """
 from __future__ import annotations
 
+import itertools
 from collections import defaultdict
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from inference.utils.grid_utils import ARC_COLOR_CHARS, format_grid_ascii
 
@@ -80,7 +82,7 @@ def _transient_cells(chain: Sequence[Grid]) -> list[tuple[int, int]]:
     exactly the pixels no frame the agent can reach will ever contain.
     """
     changes: defaultdict[tuple[int, int], int] = defaultdict(int)
-    for before, after in zip(chain, chain[1:]):
+    for before, after in itertools.pairwise(chain):
         rows = max(len(before), len(after))
         for row in range(rows):
             before_row = before[row] if row < len(before) else ()

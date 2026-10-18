@@ -8,6 +8,7 @@ the Python-tool sandbox bootstrap, where project packages are not importable.
 import hashlib
 
 _ORTH = ((-1, 0), (1, 0), (0, -1), (0, 1))
+_DIAG = ((-1, -1), (-1, 1), (1, 1), (1, -1))
 # clockwise Moore-neighbour offsets, starting at NW
 _CW = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
 _CW_INDEX = {off: i for i, off in enumerate(_CW)}
@@ -117,7 +118,7 @@ def _object_signature(cells, color):
     return canonical, rotation, symmetry, hashes[0], shape_hash
 
 
-def segment_layer(layer, color_chars):
+def segment_layer(layer, color_chars, connectivity=4):
     """Segment one frame layer into connected-component nodes.
 
     Pass a single layer (if the frame has multiple) and ``color_chars``, the ARC
@@ -147,10 +148,12 @@ def segment_layer(layer, color_chars):
       - ``adjacency_list``: sorted list of ``[i, j]`` id pairs for components that share
         a 4-connected edge (includes parent/child pairs, since they physically touch).
     """
+    if connectivity not in (4, 8):
+        raise ValueError("connectivity must be 4 (shared edges) or 8 (edges or corners).")
+    neighbours = _ORTH if connectivity == 4 else _ORTH + _DIAG
     height = len(layer)
     width = len(layer[0]) if height else 0
-
-    # connected components, 4-connectivity. Reading-order scan => component ids are
+    # Connected components. Reading-order scan => component ids are
     # already ordered by top-most-left-most cell (each layer is 64x64, so it is unique).
     comp_id = [[-1] * width for _ in range(height)]
     components = []  # each: {"value": int, "cells": set[(r, c)], "start": (r, c)}
@@ -166,7 +169,7 @@ def segment_layer(layer, color_chars):
             while stack:
                 r, c = stack.pop()
                 cells.add((r, c))
-                for dr, dc in _ORTH:
+                for dr, dc in neighbours:
                     nr, nc = r + dr, c + dc
                     if 0 <= nr < height and 0 <= nc < width and comp_id[nr][nc] == -1 and layer[nr][nc] == value:
                         comp_id[nr][nc] = cid
@@ -234,6 +237,11 @@ def segment_layer(layer, color_chars):
         color = color_chars[max(0, min(15, comp["value"]))]
         boundary = _corner_points(_trace_outer_contour(comp["cells"], comp["start"]))
         signature = _object_signature(comp["cells"], color)
+        ordered_cells = sorted(comp["cells"])
+        min_r = min(r for r, _ in ordered_cells)
+        max_r = max(r for r, _ in ordered_cells)
+        min_c = min(c for _, c in ordered_cells)
+        max_c = max(c for _, c in ordered_cells)
         nodes.append(
             {
                 "id": cid,
@@ -244,9 +252,20 @@ def segment_layer(layer, color_chars):
                 "pose_hash": signature[3],
                 "shape_hash": signature[4],
                 "pixels": len(comp["cells"]),
+                "cells": [[r, c] for r, c in ordered_cells],
+                "bbox": [min_r, min_c, max_r, max_c],
+                "height": max_r - min_r + 1,
+                "width": max_c - min_c + 1,
+                "centroid": [
+                      sum(r for r, _ in ordered_cells) / len(ordered_cells),
+                      sum(c for _, c in ordered_cells) / len(ordered_cells),
+                  ],
+                "touches_border": (
+                    min_r == 0 or min_c == 0 or max_r == height - 1 or max_c == width - 1
+                  ),
                 "boundary": [[r, c] for r, c in boundary],
                 "children": children[cid],
             }
         )
 
-    return {"nodes": nodes, "adjacency_list": adjacency_list}
+    return {"connectivity": connectivity, "nodes": nodes, "adjacency_list": adjacency_list}

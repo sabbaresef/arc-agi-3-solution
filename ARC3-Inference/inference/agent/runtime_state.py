@@ -8,7 +8,6 @@ from typing import Any
 
 from inference.utils.grid_utils import format_grid_ascii
 
-
 RUNTIME_STATE_FILENAME = "tool_runtime_state.json"
 
 

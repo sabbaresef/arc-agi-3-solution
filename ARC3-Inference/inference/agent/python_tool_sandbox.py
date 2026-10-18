@@ -10,16 +10,16 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import textwrap
+import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from inference.utils import frame_diff as _frame_diff_module
-from inference.utils import segmentation as _segmentation
 from inference.utils import retained_functions as _retained_functions
+from inference.utils import segmentation as _segmentation
 from inference.utils.grid_utils import ARC_COLOR_CHARS
-
 
 _SANDBOX_BOOTSTRAP = textwrap.dedent(
     r"""
@@ -163,14 +163,51 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             self.step = step
             self.level = level
             self.shape = tuple(shape)
-            self._grid = grid
-            self._segmentation = None
-
+            self._grid = tuple(tuple(int(cell) for cell in row) for row in (grid or ()))
+            self._segmentation4 = None
+            self._segmentation8 = None
+        
+        @property
+        def grid(self):
+            # Immutable numeric grid (tuple of row tuples).
+            return self._grid
+        
+        def cell(self, row, col):
+            # Return one numeric cell; reject negative and out-of-range coordinates.
+            if not isinstance(row, int) or not isinstance(col, int):
+                raise TypeError("cell(row, col) requires integer coordinates.")
+            rows, cols = self.shape
+            if row < 0 or col < 0 or row >= rows or col >= cols:
+                raise IndexError(f"cell coordinate ({row}, {col}) is outside shape {self.shape}.")
+            return self._grid[row][col]
+        
+        def crop(self, r0, c0, r1, c1):
+            # Return immutable rows in the half-open rectangle [r0:r1, c0:c1].
+            if not all(isinstance(v, int) for v in (r0, c0, r1, c1)):
+                raise TypeError("crop(r0, c0, r1, c1) requires integer bounds.")
+            rows, cols = self.shape
+            if not (0 <= r0 <= r1 <= rows and 0 <= c0 <= c1 <= cols):
+                raise IndexError(f"crop bounds must fit shape {self.shape} and use half-open order.")
+            return tuple(tuple(row[c0:c1]) for row in self._grid[r0:r1])
+        
+        @property
+        def segmentation4(self):
+            # Same-color components connected through shared edges only.
+            if self._segmentation4 is None:
+                self._segmentation4 = segment_layer(self._grid, COLOR_CHARS, connectivity=4)
+            return self._segmentation4
+        
+        @property
+        def segmentation8(self):
+            # Same-color components connected through shared edges or corners.
+            if self._segmentation8 is None:
+                self._segmentation8 = segment_layer(self._grid, COLOR_CHARS, connectivity=8)
+            return self._segmentation8
+        
         @property
         def segmentation(self):
-            if self._segmentation is None:
-                self._segmentation = segment_layer(self._grid, COLOR_CHARS)
-            return self._segmentation
+            # Legacy compatibility alias. Model-facing instructions use segmentation4 explicitly.
+            return self.segmentation4
 
         def __str__(self):
             rows, cols = self.shape
@@ -377,8 +414,8 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             return compute_frame_diff(
                 before._grid,
                 after._grid,
-                before.segmentation.get("nodes", []),
-                after.segmentation.get("nodes", []),
+                before.segmentation4.get("nodes", []),
+                after.segmentation4.get("nodes", []),
             )
 
         def _refresh_state(state_payload):

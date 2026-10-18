@@ -1,7 +1,7 @@
 """Grid formatting helpers."""
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 ARC_COLOR_CHARS = "WwgGcBMPRbSYOrNp"
 ARC_COLOR_LEGEND = (

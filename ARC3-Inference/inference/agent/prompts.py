@@ -130,21 +130,21 @@ GAMEPLAY_CHANGED_ADDENDUM = (
 STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "\n\nRuntime variables inside every `python` tool call:\n"
     "- `current_frame` is a lightweight frame view for the latest environment state.\n"
-    "- `current_frame` exposes only `.ascii`, `.step`, `.level`, `.shape`, and `.segmentation`.\n"
+    "- `current_frame` exposes only `.grid`, `.cell(row, col)`, `.crop(r0, c0, r1, c1)`, `.ascii`, `.step`, `.level`, `.shape`, `.segmentation4`, and `.segmentation8`.\n"
     "- `current_frame.ascii` is a single newline-delimited string containing the latest board rendered with the letter-coded ARC color symbols.\n"
-    "- `current_frame.segmentation` parses the board into objects. It returns `{'nodes': [...], 'adjacency_list': [...]}`.\n"
-    "- Each node in `segmentation['nodes']` is one 4-connected same-color object with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores position AND rotation -- equal hashes indicate matching color and shape up to rotation; they do not establish object identity), `rotation` (degrees clockwise from the object's canonical orientation: 0/90/180/270, reduced to 0/90 for 2-fold symmetric shapes, `None` for fully symmetric ones), `rotational_symmetry` (1, 2, or 4), `pose_hash` (the rotation-SENSITIVE variant, if you need to match exact orientation), `shape_hash` (color-independent pose shape signature), `pixels` (cell count), `boundary` (clockwise outer-perimeter corner points as `[row, col]` cell coordinates), and `children` (ids of objects fully enclosed by this one).\n"
-    "- `segmentation['adjacency_list']` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
+    "- `current_frame.segmentation4` is the normal object view: same-color cells connect only through shared edges. `current_frame.segmentation8` is an exceptional alternative for shapes connected only at diagonal corners. Both return `{'connectivity': 4|8, 'nodes': [...], 'adjacency_list': [...]}`. Do not choose between them routinely: start with `segmentation4`, and inspect `segmentation8` only when diagonal connectivity is specifically relevant. Never compare or combine node ids across the two views.\n"
+    "- Each node in either segmentation is one same-color component under that view's stated connectivity, with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores position AND rotation -- equal hashes indicate matching color and shape up to rotation; they do not establish object identity), `rotation` (degrees clockwise from the object's canonical orientation: 0/90/180/270, reduced to 0/90 for 2-fold symmetric shapes, `None` for fully symmetric ones), `rotational_symmetry` (1, 2, or 4), `pose_hash` (the rotation-SENSITIVE variant, if you need to match exact orientation), `shape_hash` (color-independent pose shape signature), `pixels` (cell count), `cells` (all occupied `[row, col]` cells), `bbox` (`[r0, c0, r1, c1]`, inclusive), `height`, `width`, `centroid`, `touches_border`, `boundary` (clockwise outer-perimeter corner points as `[row, col]` cell coordinates), and `children` (ids of objects fully enclosed by this one).\n"
+    "- each segmentation's `adjacency_list` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
     
     "- `current_frame.step` is the current environment step count.\n"
     "- `current_frame.level` is the current level number.\n"
     "- `current_frame.shape` is a `(rows, cols)` tuple.\n"
-    "- The raw numeric grid is intentionally not exposed. Use `current_frame.segmentation` as your primary view of the board -- objects, colors, shapes, containment, adjacency, and cross-frame object hashes. Use `current_frame.ascii` only to read a small, specific region; do not scan the whole board with it.\n"
+    "- `current_frame.grid` is the immutable numeric source grid. `cell(row, col)` reads one value. `crop(r0, c0, r1, c1)` returns a numeric tuple-of-tuples using half-open bounds. Use these when you need exact cells or want to build a game-specific representation.\n"
 
     "- `history` is a chronological list of action/frame snapshots.\n"
     "- `history` is a Python list of objects, not a dict.\n"
     "- Each history entry exposes `.action`, `.frame`, and `.result`; entries are not subscriptable like `entry['action']`.\n"
-    "- Each `history[i].frame` is the frame after `history[i].action`; each frame exposes only `.ascii`, `.step`, `.level`, `.shape`, and `.segmentation`.\n"
+    "- Each `history[i].frame` is the frame after `history[i].action`; each frame exposes only `.grid`, `.cell(row, col)`, `.crop(r0, c0, r1, c1)`, `.ascii`, `.step`, `.level`, `.shape`, `.segmentation4`, and `.segmentation8`.\n"
     "- Important history semantics: when `history` is non-empty, `history[-1].frame` is the same latest/post-action board as `current_frame`. It is not the previous board. To inspect the state before the latest action, use `previous_frame` or `history[-2].frame` when available.\n"
     "- `previous_frame` is the frame before the most recent real environment action, or `None` if no previous frame is available.\n"
     "- `last_action` is the most recent real environment action name/display, or `None` before any real action.\n"
@@ -178,7 +178,7 @@ ANIMATION_ADDENDUM = (
     "in `history`.\n"
     "- `last_animation_frames` is the frames of the last executed action that "
     "animated, as views with "
-    "`.ascii`, `.shape` and `.segmentation`, the same as `current_frame`. Index 0 is "
+    "`.grid`, `.ascii`, `.shape`, `.segmentation4` and `.segmentation8`, the same as `current_frame`. Index 0 is "
     "the first frame of the animation and the last entry is the board it settled on. "
     "After a death these are the frames of the FATAL action, not of the automatic "
     "reset that followed it. Crop "
@@ -196,8 +196,8 @@ MULTIMODAL_CONTEXT_ADDENDUM = (
 
 PYTHON_ADDENDUM_HEAD = (
     "\n\nPython tool guidance:\n"
-    "- Use `current_frame.segmentation` as your primary view of the board -- objects, colors, containment, adjacency, and cross-frame object hashes.\n"
-    "- Use `current_frame.ascii` only to read a small, specific region of the board when `segmentation` is not enough; never use it to scan or summarize the whole board.\n"
+    "- Use `current_frame.segmentation4` as your normal object view of the board -- objects, colors, containment, adjacency, and cross-frame object hashes.\n"
+    "- Use `current_frame.grid`, `cell(...)`, or `crop(...)` for exact numeric data. Use `segmentation8` only when diagonal corner contact is meaningful; do not mix node ids between segmentations. Use `.ascii` only for compact visual inspection.\n"
     "- Every `python` tool call starts fresh. Re-import modules or re-define any custom utility logic you need.\n"
     "- The only importable standard-library modules are: bisect, collections, copy, fractions, functools, heapq, itertools, json, math, operator, random, re, statistics, string.\n"
     "- The only tool is `python`; call it with one ephemeral `code` string.\n"
@@ -227,15 +227,12 @@ PYTHON_ADDENDUM_TAIL = (
 )
 
 FRAME_DIFF_HINT_ADDENDUM = (
-    "- `frame_diff(before=None, after=None)` compares two frames. Omitted arguments default to `previous_frame` and `current_frame`, respectively.\n"
-    "- It returns a dictionary containing `changed_cell_count` (an integer) and lists named `moved`, `rotated`, `appeared`, `disappeared`, `changed_color`, and `resized`. Unchanged objects are omitted.\n"
-    "- Object-level changes are inferred by matching same-color, 4-connected components between frames: cells connect through shared edges, not diagonally. A game object may therefore be split into several components, or touching same-color objects may form one component.\n"
-    "- `moved` describes components matched at different positions. Matching does not establish persistent object identity: with multiple similar components, the reported correspondence may be ambiguous or incorrect. Movement combined with rotation includes `rotated_by` in degrees clockwise; `rotated` describes rotation in place.\n"
-    "- `changed_color` requires identical occupied cells with a different color. Entries contain `at`, `pixels`, `before_color`, `after_color`, `before_hash`, and `after_hash`.\n"
-    "- `resized` describes same-color components with overlapping footprints whose size changed. This can include backgrounds and budget bars. `at_before` and `at_after` can differ.\n"
-    "- `appeared` and `disappeared` entries include `bbox` in `[r0, c0, r1, c1]` order. Object hashes use the same rotation-invariant shape-and-color representation as segmentation; they are not unique object identities, and multiple objects can share a hash.\n"
-    "- Examples: `frame_diff()` compares the latest action’s before/after frames; `frame_diff(history[-3].frame, history[-2].frame)` compares two explicitly selected historical frames, when available.\n"
-)
+      "- `frame_diff(before=None, after=None)` compares two frames. Omitted arguments default to `previous_frame` and `current_frame`.\n"
+      "- Exact, unambiguous evidence is returned in `changed_cell_count`, `changed_cells`, `changed_bbox`, and `color_transitions`. Each `changed_cells` item is `{'row', 'col', 'before', 'after'}`; coordinates are sorted in row-major order. `changed_bbox` is inclusive `[r0, c0, r1, c1]`.\n"
+      "- The lists `moved`, `rotated`, `appeared`, `disappeared`, `changed_color`, and `resized` are convenient object-level interpretations derived only from the default `segmentation4`. They are not ground truth: repeated or touching components can make matching ambiguous. Verify important conclusions against `changed_cells`.\n"
+      "- `changed_color` is strict: the same occupied cells changed color. `resized` is heuristic: same-color components have substantially overlapping bounding boxes.\n"
+      "- Examples: `frame_diff()` compares the latest action's before/after frames; `frame_diff(history[-3].frame, history[-2].frame)` compares explicitly selected historical frames when available.\n"
+  )
 
 STEP_VERIFICATION_ADDENDUM = (
     "- During a multi-action plan, verify important effects by comparing the actual game "

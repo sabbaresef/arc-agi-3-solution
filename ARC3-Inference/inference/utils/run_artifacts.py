@@ -7,7 +7,6 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -92,7 +91,7 @@ def save_git_info(base_dir: Path) -> Path:
     try:
         commit, diff = get_git_info()
         path.write_text(f"commit: {commit}\n\n{diff}", encoding="utf-8")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("failed to capture git info: %s", exc)
         path.write_text(f"git info unavailable: {exc}\n", encoding="utf-8")
     return path
