@@ -8,7 +8,10 @@ LEVEL_TRANSFER_SYSTEM_GUIDANCE = (
     "re-checking anything contradicted by new evidence. New levels often introduce "
     "additional mechanics, sometimes through unfamiliar board elements. These additions "
     "are often important for solving the level. The goal may remain the same but require "
-    "new mechanics to reach it, or the goal itself may change.\n"
+    "new mechanics to reach it, or the goal itself may change. Persistent helper functions "
+    "may still be available: reuse or adapt their general logic before rebuilding it, but "
+    "revalidate assumptions tied to coordinates, colors, dimensions, object counts, or the "
+    "previous layout.\n"
 )
 
 LEVEL_START_USER_PROMPT = (
@@ -23,7 +26,9 @@ LEVEL_START_USER_PROMPT = (
     "informative tests when their behavior is unclear.\n\n"
     "Reassess the goal: does the previous objective still apply, now requiring the new "
     "mechanics, or does the evidence suggest a different objective? Combine retained "
-    "knowledge with new findings to plan for this board."
+    "knowledge with new findings to plan for this board. Before writing replacement Python "
+    "helpers, reuse or adapt retained functions whose general logic still applies, while "
+    "rechecking level-specific constants and assumptions."
 )
 
 
@@ -132,7 +137,7 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "- `current_frame` is a lightweight frame view for the latest environment state.\n"
     "- `current_frame` exposes only `.grid`, `.cell(row, col)`, `.crop(r0, c0, r1, c1)`, `.ascii`, `.step`, `.level`, `.shape`, `.segmentation4`, and `.segmentation8`.\n"
     "- `current_frame.ascii` is a single newline-delimited string containing the latest board rendered with the letter-coded ARC color symbols.\n"
-    "- `current_frame.segmentation4` is the normal object view: same-color cells connect only through shared edges. `current_frame.segmentation8` is an exceptional alternative for shapes connected only at diagonal corners. Both return `{'connectivity': 4|8, 'nodes': [...], 'adjacency_list': [...]}`. Do not choose between them routinely: start with `segmentation4`, and inspect `segmentation8` only when diagonal connectivity is specifically relevant. Never compare or combine node ids across `segmentation4` and `segmentation8`.\n"
+    "- `current_frame.segmentation4` groups same-color cells connected through shared edges. `current_frame.segmentation8` groups same-color cells connected through shared edges or diagonal corners. Both return `{'connectivity': 4|8, 'nodes': [...], 'adjacency_list': [...]}`. Choose the representation that fits the current question; they are complementary, and you may combine their evidence when useful. Never compare or combine node ids across `segmentation4` and `segmentation8`.\n"
     "- Each node in either `segmentation4` or `segmentation8` is one same-color component under that view's stated connectivity, with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores position AND rotation -- equal hashes indicate matching color and shape up to rotation; they do not establish object identity), `rotation` (degrees clockwise from the object's canonical orientation: 0/90/180/270, reduced to 0/90 for 2-fold symmetric shapes, `None` for fully symmetric ones), `rotational_symmetry` (1, 2, or 4), `pose_hash` (the rotation-SENSITIVE variant, if you need to match exact orientation), `shape_hash` (color-independent pose shape signature), `pixels` (cell count), `cells` (all occupied `[row, col]` cells), `bbox` (`[r0, c0, r1, c1]`, inclusive), `height`, `width`, `centroid`, `touches_border`, `boundary` (clockwise outer-perimeter corner points as `[row, col]` cell coordinates), and `children` (ids of objects fully enclosed by this one).\n"
     "- the `adjacency_list` of both `segmentation4` and `segmentation8` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
     
@@ -196,8 +201,7 @@ MULTIMODAL_CONTEXT_ADDENDUM = (
 
 PYTHON_ADDENDUM_HEAD = (
     "\n\nPython tool guidance:\n"
-    "- Use `current_frame.segmentation4` as your normal object view of the board -- objects, colors, containment, adjacency, and cross-frame object hashes.\n"
-    "- Use `current_frame.grid`, `cell(...)`, or `crop(...)` for exact numeric data. Use `current_frame.segmentation8` only when diagonal corner contact is meaningful; do not mix node ids between `segmentation4` and `segmentation8`. Use `.ascii` only for compact visual inspection.\n"
+    "- Choose the representation that best fits the question: use `current_frame.grid`, `cell(...)`, or `crop(...)` for exact layouts and patterns; use `current_frame.segmentation4` for edge-connected same-color objects; use `current_frame.segmentation8` when diagonal corner contact is relevant; and use `frame_diff()` for exact or object-level changes. These views are complementary. Do not mix node ids between `segmentation4` and `segmentation8`. Use `.ascii` only for compact visual inspection.\n"
     "- Every `python` tool call starts fresh. Re-import modules or re-define any custom utility logic you need.\n"
     "- The only importable standard-library modules are: bisect, collections, copy, fractions, functools, heapq, itertools, json, math, operator, random, re, statistics, string.\n"
     "- The only tool is `python`; call it with one ephemeral `code` string.\n"
@@ -280,18 +284,10 @@ NOOP_GUARD_ADDENDUM = (
 )
 
 PREFER_TOOL_CALLS_LINE = (
-    # The closing clause used to warn that a long chain "wastes the whole turn".
-    # That overstated it - a truncated reply keeps its reasoning in history, and
-    # what is lost is only that nothing executed - and it aimed at the tail,
-    # since truncation touched about 4% of replies. The speed claim is the
-    # stronger one and it is true: decode runs at tens of tokens per second per
-    # stream, while a tool call is a short generation plus a mostly-cached
-    # prefill, so 2,000 tokens of further reasoning costs far more wall-clock
-    # than running the code that would settle the question.
-    "- Reading and computing cost nothing; only `action(...)` spends the level budget. When you "
-    "are unsure, prefer another tool call over more reasoning: the code answers what the "
-    "reasoning would only guess at, and running it is faster than thinking your way to the "
-    "same answer.\n"
+    "- Python computation does not spend game actions, but it still uses inference time and "
+    "context. Reuse evidence and results already established for the current state. Make an "
+    "additional inspection call when it can resolve a concrete uncertainty that changes the "
+    "next action or when the latest result was unexpected; repeated broad inspection is not useful.\n"
 )
 
 EPHEMERAL_FUNCTIONS_LINE = (
@@ -316,14 +312,14 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
     "- You have exactly one tool: `python`.\n"
     f"- {TOOL_CALL_FORMAT_GUIDANCE}\n"
     "{persistent_functions}"
-    "- Use the minimum Python analysis needed to choose a justified action or short sequence. Prefer one compact, filtered inspection followed by action.\n"
-    "- Re-inspect after an action only when the result is unexpected, ambiguous, or contradicts the current model. Do not repeat broad inventories that the latest evidence has not invalidated.\n"
+    "- Use Python analysis when it answers a concrete question relevant to the next action or plan. Reuse results already established for the unchanged current state.\n"
+    "- Re-inspect after an action when the result is unexpected, ambiguous, or contradicts the current model. Do not repeat broad inventories that the latest evidence has not invalidated.\n"
     "{prefer_tool_calls}"
-    "- After `action(...)` returns, the structured runtime state is refreshed before the next Python statement and before the next tool call. Inspection-only Python calls do not clear `last_action_call_result`.\n"
+    "- After each real action executed inside `action(...)`, `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_call_result`, `last_animation_frames`, and `last_animation_timeline` are refreshed before Python execution continues. Inspection-only Python calls do not clear `last_action_call_result` or the latest animation views.\n"
     "- Each `python` tool call has a hard time limit of 30 seconds.\n"
     "- Tool responses are capped to about {tool_output_tokens} tokens. If a response is cut off, the tool result will tell you that.\n"
     "- Keep code snippets short and purpose-built rather than dumping large frameworks into one call.\n"
-    "- Do not print every `segmentation4` node by default. Filter `current_frame.segmentation4[\"nodes\"]` by relevant color, size, location, border contact, or recent changed region. Inspect `current_frame.segmentation8` only when diagonal corner contact is specifically relevant.\n"
+    "- Segmentation results may contain many nodes. Process or print the objects and fields relevant to the current question; full enumeration remains available when the global scene structure is itself the question.\n"
 )
 
 

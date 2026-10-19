@@ -317,8 +317,7 @@ _PYTHON_TOOL_DESCRIPTION = (
     "and `action(actions)` for executing one or more real environment actions. "
     "Frames expose `.grid` (immutable numeric rows), `.cell(row,col)`, `.crop(r0,c0,r1,c1)` with half-open bounds, "
     "`.ascii`, `.segmentation4`, `.segmentation8`, `.step`, `.level`, and `.shape`. "
-    "Always use `.segmentation4` as the normal object view; it joins same-color cells only through shared edges. "
-    "Use `.segmentation8` only for the exceptional case where diagonal corner contact should count. Never merge or compare node ids between `segmentation4` and `segmentation8`. "
+    "Use `.segmentation4` for same-color cells connected through shared edges and `.segmentation8` when diagonal corner contact should also connect them. Choose the view that fits the current question; they are complementary. Never merge or compare node ids between `segmentation4` and `segmentation8`. "
     "`frame_diff()` returns exact `changed_cells`, `changed_bbox`, and `color_transitions`; its object-event lists are derived from the default `.segmentation4` and may be ambiguous when components repeat. "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, compare `previous_frame` to `current_frame` or use `last_transition.before_frame` and `.after_frame`. "
@@ -5143,7 +5142,7 @@ class ToolAgent:
             [
                 "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_call_result`, `frame_diff(before, after)`, and `action(actions)`.",
                 "Exact numeric board data is available through `current_frame.grid`, `current_frame.cell(row, col)`, and `current_frame.crop(r0, c0, r1, c1)`; `.grid` and `.crop(...)` are immutable tuple-based views.",
-                "Keep tool output compact: use `current_frame.segmentation4` as the normal object view. Use `current_frame.segmentation8` only when diagonal corner contact is specifically relevant, and never compare or combine node IDs across `segmentation4` and `segmentation8`. Use `.grid`, `.cell(...)`, or `.crop(...)` for exact numeric evidence; use `.ascii` only for compact visual inspection; never print full boards.",
+                "Keep tool output compact and choose the representation that fits the question: `.grid`, `.cell(...)`, or `.crop(...)` for exact layouts and patterns; `current_frame.segmentation4` for edge-connected same-color objects; `current_frame.segmentation8` when diagonal corner contact matters; and `frame_diff(...)` for changes. Never compare or combine node IDs across `segmentation4` and `segmentation8`; use `.ascii` only for compact visual inspection; never print full boards.",
                 "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
             ]
         )
@@ -7070,7 +7069,7 @@ class ToolAgent:
                         + f"{_transient_clause}"
                         "Each section you write replaces the stored one entirely, "
                         "so restate what is still true, not only what is new. "
-                        "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- use `current_frame.segmentation4` as the normal object view, `current_frame.segmentation8` only for specifically diagonal connectivity, and `.grid`, `.cell(...)`, or `.crop(...)` for exact numeric evidence -- "
+                        "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- choose `.grid`, `.cell(...)`, or `.crop(...)` for exact layouts, `current_frame.segmentation4` for edge-connected same-color objects, `current_frame.segmentation8` when diagonal connectivity matters, or `frame_diff(...)` for changes -- "
                         "compare `previous_frame` to `current_frame` for the most recent change, "
                         "derives a compact board summary, programs a small search or scorer over candidate actions or short sequences, "
                         "then call `action(actions)` inside Python with the best valid action or ordered batch that your code selected. "
