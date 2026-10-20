@@ -9,9 +9,10 @@ LEVEL_TRANSFER_SYSTEM_GUIDANCE = (
     "additional mechanics, sometimes through unfamiliar board elements. These additions "
     "are often important for solving the level. The goal may remain the same but require "
     "new mechanics to reach it, or the goal itself may change. Persistent helper functions "
-    "may still be available: reuse or adapt their general logic before rebuilding it, but "
-    "revalidate assumptions tied to coordinates, colors, dimensions, object counts, or the "
-    "previous layout.\n"
+    "may remain available after a level change. Reuse them when their assumptions still "
+    "match the current level; otherwise revise or replace them. Before reuse, re-check "
+    "assumptions tied to coordinates, colors, dimensions, object counts, obstacles, or "
+    "layout-specific constants.\n"
 )
 
 LEVEL_START_USER_PROMPT = (
@@ -26,9 +27,7 @@ LEVEL_START_USER_PROMPT = (
     "informative tests when their behavior is unclear.\n\n"
     "Reassess the goal: does the previous objective still apply, now requiring the new "
     "mechanics, or does the evidence suggest a different objective? Combine retained "
-    "knowledge with new findings to plan for this board. Before writing replacement Python "
-    "helpers, reuse or adapt retained functions whose general logic still applies, while "
-    "rechecking level-specific constants and assumptions."
+    "knowledge with new findings to plan for this board."
 )
 
 
@@ -56,6 +55,10 @@ def apply_level_transfer_system_guidance(prompt: str) -> str:
             "- `WIN` means the whole game is solved. Mid-run level completion is more likely to appear as a score increase while play continues.\n",
             "- `WIN` means the whole game is solved.\n",
         )
+        .replace(
+            "- If an action result reports `game_over`, `run_complete`, `level_completed`, or `done`, stop acting immediately and re-ground on the next turn.\n",
+            "- If an action result reports `game_over`, `run_complete`, or `done`, stop acting immediately and re-ground on the next turn.\n",
+        )
     )
 
 
@@ -68,7 +71,7 @@ TOOL_CALL_FORMAT_GUIDANCE = (
 GAME_OVERVIEW_ADDENDUM = (
     "\n\nGame overview:\n"
     "- You are solving a multi-level grid puzzle game. \n"
-    "- You are called repeatedly over the course of a run. Treat each analyzer turn as one observe-plan-act cycle: understand the current state, choose the next best action or short sequence, and execute it. After an action executes, the current analyzer turn ends; the next analyzer turn starts from the updated environment state. Within the executing Python snippet, however, `action(...)` refreshes the runtime globals before Python execution continues.\n"
+    "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model in Python, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
     "- Your job is to solve the entire game by clearing every level, not just the current screen.\n"
     "- Levels often build on earlier mechanics, but layouts and interactions can still change between levels.\n"
     "- Optimize for as few in-game actions as possible while still being reliable.\n"
@@ -79,11 +82,11 @@ GAME_OVERVIEW_ADDENDUM = (
 VISUAL_GAME_ADDENDUM = (
     "\n\nVisual-game guidance:\n"
     "- Treat each board as a scene with objects, blockers, targets, adjacency, containment, motion, and symmetry.\n"
-    "- Game entities are often rendered as connected multi-tile shapes such as 2×2, 2×3, 3×3, or longer patterned structures. They may also be 1×1 tokens.\n"
+    "- Game entities are usually be rendered as connected multi-tile shapes such as 2×2, 2×3, 3×3, or longer patterned structures. Sometime they might also be 1x1 tokens."
     "- Some games are logic or layout puzzles with no explicit player avatar or controllable sprite on the board. Do not assume a player exists; the relevant state may be an object, region, cursor, selector, or whole-board configuration.\n"
     "- Background colors are often white or gray/black-ish large regions, but not always. Verify background hypotheses by area, stability, and object boundaries rather than assuming them.\n"
-    "- A long horizontal or vertical strip near an edge may be a timer or remaining-steps bar, but edge position alone does not prove that it is HUD. Treat it as HUD only when repeated actions change that strip while puzzle-relevant evidence supports the same interpretation.\n"
-    "- Do not click through an edge strip merely because `segmentation4` or `segmentation8` splits it into components. First test whether it behaves as a control, a puzzle object, or a changing status display.\n"
+    "- In many games, a long horizontal or vertical line near an edge is a timer or remaining-steps bar. It often shrinks or changes each step. If you identify such a bar, do not get distracted by it or treat it as core gameplay state unless there is concrete evidence that it interacts with the puzzle mechanics.\n"
+    "A common failure mode is to mistake a segmented edge bar for clickable puzzle pieces. If a repeated strip of small blocks sits flush against the top, bottom, left, or right border and actions only change that strip while the interior board stays the same, classify it as HUD/timer state, not as an object to click through segment by segment. DON'T DO THIS!\n"
     "- Use coordinates only to target actions or describe local evidence. Do not frame the objective as reaching a specific absolute row or column.\n"
     "- Re-ground on the newest frame after any score increase or abrupt scene change; the returned board may already be the next level.\n"
     "- `WIN` means the whole game is solved. Mid-run level completion is more likely to appear as a score increase while play continues.\n"
@@ -122,28 +125,30 @@ GAMEPLAY_CHANGED_ADDENDUM = (
     # and "inside that border" both read as possibly including the border
     # cells themselves; "ignores those edge cells" states the rule before any
     # geometry, and "further in" cannot be read as the border.
-    "- `board_changed` is true when ANY cell differs. `gameplay_changed` is a legacy geometric flag: it ignores cells within {border} of the edge and is true only when a cell farther inward differs. It does not semantically prove whether a change belongs to gameplay or HUD. When that distinction matters, inspect the changed coordinates with `frame_diff()`.\n"
+    "- `board_changed` is true when ANY cell differs, including cells within {border} of the "
+    "edge where a timer or remaining-steps bar usually sits; `gameplay_changed` ignores those "
+    "edge cells and is true only when a cell further in differs. An action that only shrinks "
+    "a timer bar in those edge cells sets `board_changed` but not `gameplay_changed`.\n"
 )
 
 STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "\n\nRuntime variables inside every `python` tool call:\n"
     "- `current_frame` is a lightweight frame view for the latest environment state.\n"
-    "- `current_frame` exposes only `.grid`, `.cell(row, col)`, `.crop(r0, c0, r1, c1)`, `.ascii`, `.step`, `.level`, `.shape`, `.segmentation4`, and `.segmentation8`.\n"
+    "- `current_frame` exposes only `.ascii`, `.step`, `.level`, `.shape`, and `.segmentation`.\n"
     "- `current_frame.ascii` is a single newline-delimited string containing the latest board rendered with the letter-coded ARC color symbols.\n"
-    "- `current_frame.segmentation4` groups same-color cells connected through shared edges. `current_frame.segmentation8` groups same-color cells connected through shared edges or diagonal corners. Both return `{'connectivity': 4|8, 'nodes': [...], 'adjacency_list': [...]}`. Choose the representation that fits the current question; they are complementary, and you may combine their evidence when useful. Never compare or combine node ids across `segmentation4` and `segmentation8`.\n"
-    "- Each node in either `segmentation4` or `segmentation8` is one same-color component under that view's stated connectivity, with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores position AND rotation -- equal hashes indicate matching color and shape up to rotation; they do not establish object identity), `rotation` (degrees clockwise from the object's canonical orientation: 0/90/180/270, reduced to 0/90 for 2-fold symmetric shapes, `None` for fully symmetric ones), `rotational_symmetry` (1, 2, or 4), `pose_hash` (the rotation-SENSITIVE variant, if you need to match exact orientation), `shape_hash` (color-independent pose shape signature), `pixels` (cell count), `cells` (all occupied `[row, col]` cells), `bbox` (`[r0, c0, r1, c1]`, inclusive), `height`, `width`, `centroid`, `touches_border`, `boundary` (clockwise outer-perimeter corner points as `[row, col]` cell coordinates), and `children` (ids of objects fully enclosed by this one).\n"
-    "- These node fields are independently available. Use only the fields that answer the current question; there is no requirement to inspect all of them.\n"
-    "- the `adjacency_list` of both `segmentation4` and `segmentation8` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
+    "- `current_frame.segmentation` parses the board into objects. It returns `{'nodes': [...], 'adjacency_list': [...]}`.\n"
+    "- Each node in `segmentation['nodes']` is one 4-connected same-color object with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores position AND rotation -- equal hashes indicate matching color and shape up to rotation; they do not establish object identity), `rotation` (degrees clockwise from the object's canonical orientation: 0/90/180/270, reduced to 0/90 for 2-fold symmetric shapes, `None` for fully symmetric ones), `rotational_symmetry` (1, 2, or 4), `pose_hash` (the rotation-SENSITIVE variant, if you need to match exact orientation), `shape_hash` (color-independent pose shape signature), `pixels` (cell count), `boundary` (clockwise outer-perimeter corner points as `[row, col]` cell coordinates), and `children` (ids of objects fully enclosed by this one).\n"
+    "- `segmentation['adjacency_list']` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
     
     "- `current_frame.step` is the current environment step count.\n"
     "- `current_frame.level` is the current level number.\n"
     "- `current_frame.shape` is a `(rows, cols)` tuple.\n"
-    "- `current_frame.grid` is the immutable numeric source grid. `cell(row, col)` reads one value. `crop(r0, c0, r1, c1)` returns a numeric tuple-of-tuples using half-open bounds. Use these when you need exact cells or want to build a game-specific representation.\n"
+    "- The raw numeric grid is intentionally not exposed. Use `current_frame.segmentation` as your primary view of the board -- objects, colors, shapes, containment, adjacency, and cross-frame object hashes. Use `current_frame.ascii` only to read a small, specific region; do not scan the whole board with it.\n"
 
     "- `history` is a chronological list of action/frame snapshots.\n"
     "- `history` is a Python list of objects, not a dict.\n"
     "- Each history entry exposes `.action`, `.frame`, and `.result`; entries are not subscriptable like `entry['action']`.\n"
-    "- Each `history[i].frame` is the frame after `history[i].action`; each frame exposes only `.grid`, `.cell(row, col)`, `.crop(r0, c0, r1, c1)`, `.ascii`, `.step`, `.level`, `.shape`, `.segmentation4`, and `.segmentation8`.\n"
+    "- Each `history[i].frame` is the frame after `history[i].action`; each frame exposes only `.ascii`, `.step`, `.level`, `.shape`, and `.segmentation`.\n"
     "- Important history semantics: when `history` is non-empty, `history[-1].frame` is the same latest/post-action board as `current_frame`. It is not the previous board. To inspect the state before the latest action, use `previous_frame` or `history[-2].frame` when available.\n"
     "- `previous_frame` is the frame before the most recent real environment action, or `None` if no previous frame is available.\n"
     "- `last_action` is the most recent real environment action name/display, or `None` before any real action.\n"
@@ -156,11 +161,11 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "- Call `action(actions)` to execute one or more real environment actions from Python.\n"
     "- Pass `action(actions)` a list like `['LEFT']` or `[{'action': 'MOUSE', 'row': 4, 'col': 7}]`.\n"
     "- One action usually returns one frame, but a single action can result in a short multi-frame animation.\n"
-    "- After each real action executed inside `action(actions)`, `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, and `last_action_call_result` are refreshed before Python execution continues.\n"
+    "- After `action(actions)` returns, `current_frame`, `previous_frame`, `history`, `transitions`, `valid_actions`, and `last_action_call_result` are refreshed.\n"
 )
 
 ANIMATION_ADDENDUM_TIMELINE = (
-    "- `last_animation_timeline` is the diff timeline returned by the latest executed action when that action animated; otherwise it is empty. It "
+    "- `last_animation_timeline` is a diff timeline of those frames: it "
     "shows which cells changed at each step. It is a dict with `action`, `frames` and "
     "`steps`, one entry per step that changed anything. Each entry has `step`, "
     "`changed`, `bbox`, and "
@@ -175,15 +180,15 @@ ANIMATION_ADDENDUM = (
     "changed and then changed BACK during the animation, so they appear in no frame "
     "you can otherwise reach - not in `current_frame`, not in `previous_frame`, not "
     "in `history`.\n"
-    "- `last_animation_frames` contains the frames returned by the latest executed action when that action animated; otherwise it is empty. The entries are views with "
-    "`.grid`, `.ascii`, `.shape`, `.segmentation4` and `.segmentation8`, the same as `current_frame`. Index 0 is "
+    "- `last_animation_frames` is the frames of the last executed action that "
+    "animated, as views with "
+    "`.ascii`, `.shape` and `.segmentation`, the same as `current_frame`. Index 0 is "
     "the first frame of the animation and the last entry is the board it settled on. "
     "After a death these are the frames of the FATAL action, not of the automatic "
     "reset that followed it. Crop "
     "their `.ascii` yourself; printing a whole 64x64 frame will not fit the tool "
     "budget. Empty when the action did not animate, and reading them costs no "
     "in-game action.\n"
-    "- After each real action inside `action(...)`, `last_animation_frames` and `last_animation_timeline` are invalidated and then refer to that latest action before Python execution continues.\n"
 )
 
 MULTIMODAL_CONTEXT_ADDENDUM = (
@@ -195,11 +200,12 @@ MULTIMODAL_CONTEXT_ADDENDUM = (
 
 PYTHON_ADDENDUM_HEAD = (
     "\n\nPython tool guidance:\n"
-    "- Choose the representation that best fits the question: use `current_frame.grid`, `cell(...)`, or `crop(...)` for exact layouts and patterns; use `current_frame.segmentation4` for edge-connected same-color objects; use `current_frame.segmentation8` when diagonal corner contact is relevant; and use `frame_diff()` for exact or object-level changes. These views are complementary. Do not mix node ids between `segmentation4` and `segmentation8`. Use `.ascii` only for compact visual inspection.\n"
+    "- Use `current_frame.segmentation` as your primary view of the board -- objects, colors, containment, adjacency, and cross-frame object hashes.\n"
+    "- Use `current_frame.ascii` only to read a small, specific region of the board when `segmentation` is not enough; never use it to scan or summarize the whole board.\n"
     "- Every `python` tool call starts fresh. Re-import modules or re-define any custom utility logic you need.\n"
     "- The only importable standard-library modules are: bisect, collections, copy, fractions, functools, heapq, itertools, json, math, operator, random, re, statistics, string.\n"
     "- The only tool is `python`; call it with one ephemeral `code` string.\n"
-    "- Inspect the runtime variables relevant to the current question. Do not repeatedly enumerate unchanged state that is already established in the current context.\n"
+    "- Always inspect `current_frame`, `history`, and `valid_actions` from Python instead of reasoning from the raw board by eye.\n"
     "- For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`. `history[-1].frame` is the current frame, so comparing it to `current_frame` only compares the board to itself.\n"
 )
 
@@ -212,10 +218,10 @@ PYTHON_ADDENDUM_TAIL = (
     "- Inspect current and history frames from Python instead of describing frames freehand.\n"
     "- Never print or echo full board frames. Return only compact derived summaries such as object lists, diffs, coordinates, counts, or tiny local crops.\n"
     "- Keep tool-output context size minimal and decision-oriented so you can quickly compare before/after state. It's fine to write a lot of python code, just make the output short and interpretable\n"
-    "- A useful loop is: identify the current uncertainty, choose the simplest relevant representation, compute or test what is needed, execute the best supported probe or plan with `action(...)`, and inspect again when the result is unexpected or the next decision depends on it.\n"
+    "- A strong default loop is: summarize the board, infer the desired environment change, write a small scorer or search over candidate sequences, execute the best probe or plan with `action(...)`, then inspect again until you understand exactly what changed.\n"
     "- For object tracking, match objects by color, overlap, bounding box proximity, area change, and edge contact rather than by exact coordinates alone.\n"
     "- For frame diffs, summarize changed cells, color transitions, appearing/disappearing components, movement candidates, and small local row slices around the changed region.\n"
-    "- After an uncertain or unexpected action, use exact changed cells to distinguish an interior change, an edge-only change, and no change. Do not infer HUD or gameplay semantics from the edge margin alone.\n"
+    "- After every action, verify whether gameplay objects changed or whether only a timer, progress bar, or remaining-step bar moved. Do not treat HUD-only changes as evidence that the move worked.\n"
     "- Use `print(...)` for compact summaries, or assign a final compact object to `result`.\n"
     "- Call `action(...)` inside Python rather than returning action text in the chat.\n"
     "- `action(...)` accepts an ordered list of one or more actions. Once your code has selected a reliable sequence, it is often useful to batch it.\n"
@@ -225,12 +231,15 @@ PYTHON_ADDENDUM_TAIL = (
 )
 
 FRAME_DIFF_HINT_ADDENDUM = (
-      "- `frame_diff(before=None, after=None)` compares two frames. Omitted arguments default to `previous_frame` and `current_frame`.\n"
-      "- Exact, unambiguous evidence is returned in `changed_cell_count`, `changed_cells`, `changed_bbox`, and `color_transitions`. Each `changed_cells` item is `{'row', 'col', 'before', 'after'}`; coordinates are sorted in row-major order. `changed_bbox` is inclusive `[r0, c0, r1, c1]`.\n"
-      "- The lists `moved`, `rotated`, `appeared`, `disappeared`, `changed_color`, and `resized` are convenient object-level interpretations derived only from the default `segmentation4`. They are not ground truth: repeated or touching components can make matching ambiguous. Verify important conclusions against `changed_cells`.\n"
-      "- `changed_color` is strict: the same occupied cells changed color. `resized` is heuristic: same-color components have substantially overlapping bounding boxes.\n"
-      "- Examples: `frame_diff()` compares the latest action's before/after frames; `frame_diff(history[-3].frame, history[-2].frame)` compares explicitly selected historical frames when available.\n"
-  )
+    "- `frame_diff(before=None, after=None)` compares two frames. Omitted arguments default to `previous_frame` and `current_frame`, respectively.\n"
+    "- It returns a dictionary containing `changed_cell_count` (an integer) and lists named `moved`, `rotated`, `appeared`, `disappeared`, `changed_color`, and `resized`. Unchanged objects are omitted.\n"
+    "- Object-level changes are inferred by matching same-color, 4-connected components between frames: cells connect through shared edges, not diagonally. A game object may therefore be split into several components, or touching same-color objects may form one component.\n"
+    "- `moved` describes components matched at different positions. Matching does not establish persistent object identity: with multiple similar components, the reported correspondence may be ambiguous or incorrect. Movement combined with rotation includes `rotated_by` in degrees clockwise; `rotated` describes rotation in place.\n"
+    "- `changed_color` requires identical occupied cells with a different color. Entries contain `at`, `pixels`, `before_color`, `after_color`, `before_hash`, and `after_hash`.\n"
+    "- `resized` describes same-color components with overlapping footprints whose size changed. This can include backgrounds and budget bars. `at_before` and `at_after` can differ.\n"
+    "- `appeared` and `disappeared` entries include `bbox` in `[r0, c0, r1, c1]` order. Object hashes use the same rotation-invariant shape-and-color representation as segmentation; they are not unique object identities, and multiple objects can share a hash.\n"
+    "- Examples: `frame_diff()` compares the latest action’s before/after frames; `frame_diff(history[-3].frame, history[-2].frame)` compares two explicitly selected historical frames, when available.\n"
+)
 
 STEP_VERIFICATION_ADDENDUM = (
     "- During a multi-action plan, verify important effects by comparing the actual game "
@@ -278,10 +287,13 @@ NOOP_GUARD_ADDENDUM = (
 )
 
 PREFER_TOOL_CALLS_LINE = (
-    "- Python computation does not spend game actions, but it still uses inference time and "
-    "context. Reuse evidence and results already established for the current state. Make an "
-    "additional inspection call when it can resolve a concrete uncertainty that changes the "
-    "next action or when the latest result was unexpected; repeated broad inspection is not useful.\n"
+    "- Use Python freely for computation, search, simulation, and focused inspection. Python "
+    "does not consume game actions, but it does consume inference time and context. Reuse "
+    "results that remain valid for the current state, and avoid repeating broad inspections "
+    "unless new evidence has invalidated them. When the dynamics are sufficiently understood, "
+    "move from inspection to a concrete probe, plan, search, or action sequence. After an "
+    "unexpected result, revise the assumptions affected by that result rather than automatically "
+    "restarting the entire analysis.\n"
 )
 
 EPHEMERAL_FUNCTIONS_LINE = (
@@ -306,14 +318,13 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
     "- You have exactly one tool: `python`.\n"
     f"- {TOOL_CALL_FORMAT_GUIDANCE}\n"
     "{persistent_functions}"
-    "- Use Python analysis when it answers a concrete question relevant to the next action or plan. Reuse results already established for the unchanged current state.\n"
-    "- Re-inspect after an action when the result is unexpected, ambiguous, or contradicts the current model. Do not repeat broad inventories that the latest evidence has not invalidated.\n"
+    "- You can call the `python` tool as many times as you want per step. Investigate until your code has a clear probe or plan.\n"
+    "- Do not ration tool calls when the state is unclear. Spend extra tool calls to confirm what changed between frames and whether the last action affected gameplay state or only HUD elements such as countdown bars.\n"
     "{prefer_tool_calls}"
-    "- After each real action executed inside `action(...)`, `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, and `last_action_call_result` are refreshed before Python execution continues. Inspection-only Python calls do not clear `last_action_call_result`.\n"
+    "- After `action(...)` returns, the structured runtime state is refreshed before the next Python statement and before the next tool call. Inspection-only Python calls do not clear `last_action_call_result`.\n"
     "- Each `python` tool call has a hard time limit of 30 seconds.\n"
     "- Tool responses are capped to about {tool_output_tokens} tokens. If a response is cut off, the tool result will tell you that.\n"
     "- Keep code snippets short and purpose-built rather than dumping large frameworks into one call.\n"
-    "- Segmentation results may contain many nodes. Process or print the objects and fields relevant to the current question; full enumeration remains available when the global scene structure is itself the question.\n"
 )
 
 

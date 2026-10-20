@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -218,7 +218,6 @@ _LOCAL_ANALYZER_TOP_K = _get_env_int("LOCAL_ANALYZER_TOP_K", 20)
 _LOCAL_ANALYZER_SEED = _get_env_int("LOCAL_ANALYZER_SEED", -1)
 _REQUEST_SAFETY_MARGIN_TOKENS = 512
 _CONTEXT_OVERFLOW_RETRY_TRIM_TOKENS = 512
-
 def _context_drain_floor_mode() -> bool:
     """Whether the drain stops ABOVE the target rather than below it.
 
@@ -301,7 +300,6 @@ def _persistent_history_assistant_turns() -> int:
     0 or negative disables the cap entirely, leaving the token budget as the
     only limit."""
     return _get_env_int("ARC3_HISTORY_ASSISTANT_TURNS", 30)
-
 _WM_NUDGE_TURNS = _get_env_int("ARC3_WM_NUDGE_TURNS", 0)
 _WM_WIPE_ON_GAME_OVER = _get_env_int("ARC3_WM_WIPE_ON_GAME_OVER", 1)
 _AUTO_FRAME_DIFF = _get_env_bool("ARC3_AUTO_FRAME_DIFF", False)
@@ -311,20 +309,17 @@ _DIFF_IMAGE = _get_env_bool("ARC3_DIFF_IMAGE", False)
 _RESPONSE_META_MAX_CHARS = 4000
 
 _PYTHON_TOOL_DESCRIPTION = (
-    "Run one ephemeral Python snippet against preloaded game state. Available globals: "
+    "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_call_result`, `frame_diff`, "
+    "`valid_actions`, `last_action_call_result`, "
     "and `action(actions)` for executing one or more real environment actions. "
-    "Frames expose `.grid` (immutable numeric rows), `.cell(row,col)`, `.crop(r0,c0,r1,c1)` with half-open bounds, "
-    "`.ascii`, `.segmentation4`, `.segmentation8`, `.step`, `.level`, and `.shape`. "
-    "Use `.segmentation4` for same-color cells connected through shared edges and `.segmentation8` when diagonal corner contact should also connect them. Choose the view that fits the current question; they are complementary. Never merge or compare node ids between `segmentation4` and `segmentation8`. "
-    "`frame_diff()` returns exact `changed_cells`, `changed_bbox`, and `color_transitions`; its object-event lists are derived from the default `.segmentation4` and may be ambiguous when components repeat. "
+    "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape` (a `(rows, cols)` tuple); "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, compare `previous_frame` to `current_frame` or use `last_transition.before_frame` and `.after_frame`. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
+    "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
     "Use `print(...)` for compact output or assign final data to `result`."
 )
-
 
 def _normalize_valid_actions(valid_actions: list[str] | None) -> list[str]:
     names: list[str] = []
@@ -388,12 +383,12 @@ def _stale_summary_lines(summary: dict[str, Any]) -> list[str]:
     claiming a snippet ran would be false."""
     if summary.get("stale_reason") == "no_tool_call":
         lines = [
-            "Your previous exchange this turn produced no tool call and "  # noqa: ISC004
+            "Your previous exchange this turn produced no tool call and "
             "executed no actions."
         ]
     else:
         lines = [
-            "Your last python snippet executed NO actions (it only computed or "  # noqa: ISC004
+            "Your last python snippet executed NO actions (it only computed or "
             "inspected state - that is fine)."
         ]
     executed_actions = summary.get("executed_actions")
@@ -731,8 +726,8 @@ def _yield_resume_tone() -> str:
 
 _YIELD_RESUME_PROMPT_NO_TOOLS = (
     "You spent the entire turn budget reasoning without calling a tool. Stop "
-    "deliberating and call the `python` tool NOW: inspect the current state with "
-    "the simplest relevant representation, then call `action(actions)` with the best "
+    "deliberating and call the `python` tool NOW: inspect "
+    "`current_frame.segmentation`, then call `action(actions)` with the best "
     "available action. Acting on a partial model beats another turn of "
     "analysis."
 )
@@ -756,8 +751,8 @@ _YIELD_RESUME_PROMPT_NO_TOOLS_MINIMAL = (
     # so there are no results to continue from and the useful instruction is
     # where to start instead.
     "Your previous exchange produced no tool call and executed no actions. "
-    "Start with the `python` tool and inspect the current state with the simplest "
-    "relevant representation, then call `action(actions)` when your evidence supports a choice."
+    "Start with the `python` tool: inspect `current_frame.segmentation`, then "
+    "call `action(actions)` when your evidence supports a choice."
 )
 
 _YIELD_RESUME_PROMPT_NO_TOOLS_NEUTRAL = (
@@ -770,8 +765,8 @@ _YIELD_RESUME_PROMPT_NO_TOOLS_NEUTRAL = (
     "You yielded control on the turn time budget without calling a tool. This "
     "is a scheduling interruption, not a signal that your analysis is complete "
     "- but nothing has been executed and the board is unchanged. Start with "
-    "the `python` tool and inspect the current state with the simplest relevant "
-    "representation, then call `action(actions)` once your evidence supports a choice."
+    "the `python` tool: inspect `current_frame.segmentation`, then call "
+    "`action(actions)` once your evidence supports a choice."
 )
 
 _DEAD_REASONING_STUB = "(previous attempt produced no tool call)"
@@ -1317,40 +1312,20 @@ def _resume_diff_image_enabled() -> bool:
     return _get_env_bool("ARC3_RESUME_DIFF_IMAGE", False)
 
 
-_REASONING_EFFORT_LEVELS = ("low", "medium", "xhigh")
-
-
-def _reasoning_effort_default() -> str:
-    """Base reasoning effort sent on every request outside fallback mode.
-
-    The current model accepts only low, medium and xhigh. Invalid or empty
-    values fall back to medium so a Kaggle run never silently changes behaviour
-    by inheriting a server-side default.
-    """
-    raw = os.environ.get("ARC3_REASONING_EFFORT", "medium").strip().lower()
-    if raw in _REASONING_EFFORT_LEVELS:
-        return raw
-    return "medium"
-
-
 def _reasoning_effort_ladder() -> list[str]:
-    """Reasoning-effort levels used after consecutive truncated generations.
+    """Reduced reasoning-effort levels to step down through after a truncated
+    generation, e.g. "medium,low".
 
-    The base effort is controlled separately by ARC3_REASONING_EFFORT. Each
-    truncation advances one rung; a successful action resets fallback mode and
-    restores the base effort. Only levels supported by the current model are
-    retained. Empty disables truncation fallback without disabling the base
-    effort.
-    """
-    raw = os.environ.get("ARC3_REASONING_EFFORT_LADDER", "low").strip().lower()
-    if not raw:
-        return []
-    levels: list[str] = []
-    for item in raw.split(","):
-        level = item.strip()
-        if level in _REASONING_EFFORT_LEVELS and level not in levels:
-            levels.append(level)
-    return levels
+    A reply cut off at the output ceiling is wasted twice over: the tokens are
+    spent, and if the cut lands inside a tool call the turn produces nothing
+    callable. Rather than accommodating long generations with a bigger ceiling,
+    this asks the model for less deliberation until it completes a turn -
+    stepping one rung down per truncation and resetting once an action
+    executes, which is the evidence that the turn recovered.
+
+    Empty (default) disables the behaviour entirely."""
+    raw = os.environ.get("ARC3_REASONING_EFFORT_LADDER", "").strip()
+    return [level.strip() for level in raw.split(",") if level.strip()]
 
 
 def _preserve_thinking_kwarg() -> bool | None:
@@ -1660,8 +1635,7 @@ def _suppress_board_dumps(text: str) -> tuple[str, int]:
         out.append(
             "[BOARD PRINT GUARD] Printing full boards is disallowed and "
             "character counting is unreliable for you. Compute over the grid "
-            "in python using the representation appropriate to the question "
-            "(`grid` slices, `segmentation4`, `segmentation8`, diffs, or search), "
+            "in python (segmentation nodes, slicing, run-length checks, BFS) "
             "and print only coordinates, counts, and small crops."
         )
     return "\n".join(out), suppressed
@@ -1714,7 +1688,7 @@ def _is_degenerate_text(value: str) -> bool:
 
         encoded = text.encode("utf-8", "replace")
         return len(zlib.compress(encoded, 6)) / max(1, len(encoded)) < threshold
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -1745,7 +1719,7 @@ def _normalize_section_header(head: str) -> str:
     twenty-seven memory writes in that game were silently discarded, including
     the one that correctly derived the level's kill rule.
     """
-    def drop_short(match: "re.Match[str]") -> str:  # noqa: UP037
+    def drop_short(match: "re.Match[str]") -> str:
         return " " if len(match.group(0)) <= _HEADER_DECORATION_MAX_CHARS else match.group(0)
 
     text = _HEADER_PARENTHETICAL_RE.sub(drop_short, head)
@@ -2105,7 +2079,7 @@ class _PriorityGate:
             self._free += 1
             self._pump()
 
-    def handover(self, priority: int, snapshot: PrioritySnapshot | None = None) -> None:
+    def handover(self, priority: int, snapshot: PrioritySnapshot | None = None) -> None:  # noqa: D401
         """Give up the slot and immediately compete for it again.
 
         The caller may win it straight back, which is the right outcome when
@@ -2715,10 +2689,9 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
         prompt += (
             " Each turn's message includes an 'Auto frame diff' section summarizing "
             "object-level changes since your previous analyzer turn (it spans all "
-            "actions executed in between, not just the last one). It reports the exact "
-            "net difference between the two displayed frames, not which action caused each "
-            "change and not transient changes that later reverted. Call `frame_diff()` on "
-            "explicit frames or inspect animation data when per-action or transient detail matters."
+            "actions executed in between, not just the last one). Treat it as ground "
+            "truth for what changed, consult it before acting, and call `frame_diff()` "
+            "in python when you need per-action or full object detail."
         )
     if _DIFF_IMAGE and current_grid_image_enabled():
         prompt += (
@@ -2981,7 +2954,7 @@ def _png_dimensions(data_url: str) -> tuple[int, int] | None:
         return None
     try:
         raw = base64.b64decode(head, validate=True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if len(raw) < 24 or not raw.startswith(_PNG_SIGNATURE) or raw[12:16] != b"IHDR":
         return None
@@ -3282,7 +3255,7 @@ def _resolve_run_artifact_location(state_path: Path) -> tuple[Path, str | None]:
         runtime_state_stem = Path(RUNTIME_STATE_FILENAME).stem
         suffix = f"_{runtime_state_stem}"
         state_stem = state_path.stem
-        game_stem = state_stem[:-len(suffix)] if state_stem.endswith(suffix) else state_stem  # noqa: FURB188
+        game_stem = state_stem[:-len(suffix)] if state_stem.endswith(suffix) else state_stem
         return run_root, game_stem
     return parent, None
 
@@ -3505,7 +3478,7 @@ class ToolAgent:
         self,
         *,
         model: str = _DEFAULT_ANALYZER_MODEL,
-        timeout: float | None = None,
+        timeout: Optional[float] = None,
         save_request_logs: bool = False,
         dispatch_index: int = 0,
         api_key: str | None = None,
@@ -3736,12 +3709,14 @@ class ToolAgent:
                 verdict = "RUN COMPLETE"
             elif item.get("level_completed"):
                 verdict = "LEVEL COMPLETED"
-            elif item.get("gameplay_changed") is True:
-                verdict = "INTERIOR CHANGE"
-            elif item.get("board_changed"):
-                verdict = "EDGE-ONLY CHANGE (no farther-inward cell changed)"
             elif item.get("gameplay_changed") is False:
-                verdict = "NO CHANGE"
+                verdict = (
+                    "NO-OP (executed, no change inside the board area)"
+                    if _new_noop_wording()
+                    else "NO-OP (executed, changed nothing)"
+                )
+            elif item.get("gameplay_changed") is True:
+                verdict = "effect"
             else:
                 verdict = "executed"
             entries.extend(f"{name} -> {verdict}" for name in names)
@@ -4079,7 +4054,7 @@ class ToolAgent:
         if previous_frame.grid == current_frame.grid:
             if executed > 0:
                 return [
-                    f"Auto frame diff ({span}): no cell changed since your previous "  # noqa: ISC004
+                    f"Auto frame diff ({span}): no cell changed since your previous "
                     f"analyzer turn despite {executed} executed action(s)."
                 ]
             return []
@@ -4089,27 +4064,27 @@ class ToolAgent:
         cur_cols = max((len(r) for r in current_frame.grid), default=0)
         if (prev_rows, prev_cols) != (cur_rows, cur_cols):
             return [
-                f"Auto frame diff ({span}): grid shape changed "  # noqa: ISC004
+                f"Auto frame diff ({span}): grid shape changed "
                 f"({prev_rows}x{prev_cols} -> {cur_rows}x{cur_cols}); diff skipped."
             ]
         diff = compute_frame_diff(
             previous_frame.grid,
             current_frame.grid,
-            segment_layer(previous_frame.grid, ARC_COLOR_CHARS, connectivity=4).get("nodes", []),
-            segment_layer(current_frame.grid, ARC_COLOR_CHARS, connectivity=4).get("nodes", []),
+            segment_layer(previous_frame.grid, ARC_COLOR_CHARS).get("nodes", []),
+            segment_layer(current_frame.grid, ARC_COLOR_CHARS).get("nodes", []),
             max_group_match=_AUTO_FRAME_DIFF_MAX_GROUP,
         )
         rendered = _render_auto_frame_diff(
             diff, _AUTO_FRAME_DIFF_BUDGET, total_cells=cur_rows * cur_cols
         )
         lines = [
-            f"Auto frame diff ({span}; covers everything since your previous "  # noqa: ISC004
+            f"Auto frame diff ({span}; covers everything since your previous "
             "analyzer turn, not just the last action):"
         ]
         lines.extend(rendered)
         return lines
 
-    def _death_ledger_record(self, history_entries: list["HistoryEntry"]) -> None:  # noqa: UP037
+    def _death_ledger_record(self, history_entries: list["HistoryEntry"]) -> None:
         entries = list(history_entries or [])
         if len(entries) < 2 or str(entries[-1].action or "").upper() != "RESET":
             return
@@ -4333,8 +4308,8 @@ class ToolAgent:
         diff = compute_frame_diff(
             grid_a,
             grid_b,
-            segment_layer(grid_a, ARC_COLOR_CHARS, connectivity=4).get("nodes", []),
-            segment_layer(grid_b, ARC_COLOR_CHARS, connectivity=4).get("nodes", []),
+            segment_layer(grid_a, ARC_COLOR_CHARS).get("nodes", []),
+            segment_layer(grid_b, ARC_COLOR_CHARS).get("nodes", []),
             max_group_match=_AUTO_FRAME_DIFF_MAX_GROUP,
         )
         lines.append(
@@ -4391,7 +4366,7 @@ class ToolAgent:
         if death_part is not None:
             self._pending_gameover_images.append(
                 (
-                    "Death frame image (the board at the moment the attempt "  # noqa: ISC004
+                    "Death frame image (the board at the moment the attempt "
                     "ended, before the automatic reset): inspect the budget bar "
                     "here for the BAR RULE.",
                     death_part,
@@ -4404,7 +4379,7 @@ class ToolAgent:
         if fatal_part is not None and last_alive.frame.grid != death.frame.grid:
             self._pending_gameover_images.append(
                 (
-                    "Fatal step diff image (last alive frame -> death frame): "  # noqa: ISC004
+                    "Fatal step diff image (last alive frame -> death frame): "
                     "cells changed by the killing action in their new true "
                     "color; unchanged cells dimmed to dark navy (an off-palette "
                     "color).",
@@ -4414,7 +4389,7 @@ class ToolAgent:
 
     def _game_over_diff_lines(
         self,
-        history_entries: list["HistoryEntry"],  # noqa: UP037
+        history_entries: list["HistoryEntry"],
         previous_step_summary: dict[str, Any] | None = None,
     ) -> list[str]:
         """After a game over (fresh rendering only), push two diffs over the
@@ -4440,7 +4415,8 @@ class ToolAgent:
                 executed = int(previous_step_summary.get("executed_count") or 0)
             except (TypeError, ValueError):
                 executed = 0
-        executed = max(executed, 1)
+        if executed < 1:
+            executed = 1
         start_idx = death_idx - executed
         partial = start_idx < 0
         if partial:
@@ -4480,8 +4456,8 @@ class ToolAgent:
             diff = compute_frame_diff(
                 grid_a,
                 grid_b,
-                segment_layer(grid_a, ARC_COLOR_CHARS, connectivity=4).get("nodes", []),
-                segment_layer(grid_b, ARC_COLOR_CHARS, connectivity=4).get("nodes", []),
+                segment_layer(grid_a, ARC_COLOR_CHARS).get("nodes", []),
+                segment_layer(grid_b, ARC_COLOR_CHARS).get("nodes", []),
                 max_group_match=_AUTO_FRAME_DIFF_MAX_GROUP,
             )
             rendered = _render_auto_frame_diff(
@@ -4635,7 +4611,7 @@ class ToolAgent:
                 )
             self._retained_clear_notice = ""
             return "\n\n" + "\n".join(parts) if parts else ""
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._kept_functions = {}
             self._retained_clear_notice = ""
             return "\n\nYour retained functions were cleared after a retention error; redefine any you need."
@@ -4645,7 +4621,7 @@ class ToolAgent:
             return None
         try:
             return list(self._kept_functions.values())
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._kept_functions = {}
             return []
 
@@ -4898,9 +4874,9 @@ class ToolAgent:
                     lines.append("That sequence changed cells inside the board area.")
                 elif previous_step_summary.get("board_changed"):
                     lines.append(
-                        f"That sequence changed only cells within {border} of the edge; "
-                        "no cell farther inward changed. This is geometric evidence only, "
-                        "not proof that the change was HUD."
+                        f"That sequence changed only cells within {border} of the edge "
+                        "(usually a timer or remaining-steps bar) - nothing inside the "
+                        "board area moved."
                     )
                 else:
                     lines.append("That sequence produced no change anywhere on the board.")
@@ -5141,8 +5117,8 @@ class ToolAgent:
         lines.extend(
             [
                 "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_call_result`, `frame_diff(before, after)`, and `action(actions)`.",
-                "Exact numeric board data is available through `current_frame.grid`, `current_frame.cell(row, col)`, and `current_frame.crop(r0, c0, r1, c1)`; `.grid` and `.crop(...)` are immutable tuple-based views.",
-                "Keep tool output compact and choose the representation that fits the question: `.grid`, `.cell(...)`, or `.crop(...)` for exact layouts and patterns; `current_frame.segmentation4` for edge-connected same-color objects; `current_frame.segmentation8` when diagonal corner contact matters; and `frame_diff(...)` for changes. Never compare or combine node IDs across `segmentation4` and `segmentation8`; use `.ascii` only for compact visual inspection; never print full boards.",
+                "Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
+                "Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
                 "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
             ]
         )
@@ -5188,7 +5164,7 @@ class ToolAgent:
             )
         else:
             lines.append(
-                "Focus on what changed most recently in `history`, update the target environment change if needed, and distinguish whole-frame, edge-only, and farther-inward changes before assigning gameplay or HUD meaning."
+                "Focus on what changed most recently in `history`, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
             )
         lines.extend(
             [
@@ -5249,11 +5225,8 @@ class ToolAgent:
             kwargs["preserve_thinking"] = preserve_thinking
         ladder = _reasoning_effort_ladder()
         rung = getattr(self, "_reasoning_effort_rung", -1)
-        kwargs["reasoning_effort"] = (
-            ladder[rung]
-            if ladder and 0 <= rung < len(ladder)
-            else _reasoning_effort_default()
-        )
+        if ladder and 0 <= rung < len(ladder):
+            kwargs["reasoning_effort"] = ladder[rung]
         return kwargs
 
     def _chat_completion(
@@ -5721,12 +5694,6 @@ class ToolAgent:
         }
         if "gameplay_changed" in payload:
             compact["gameplay_changed"] = bool(payload.get("gameplay_changed"))
-        if compact.get("gameplay_changed"):
-            compact["change_kind"] = "interior"
-        elif compact.get("board_changed"):
-            compact["change_kind"] = "edge_only"
-        else:
-            compact["change_kind"] = "none"
         executed_actions = payload.get("executed_actions")
         if isinstance(executed_actions, list) and executed_actions:
             compact["executed_actions"] = [str(action).strip() for action in executed_actions if str(action).strip()]
@@ -5950,6 +5917,7 @@ class ToolAgent:
             retain_imports=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_IMPORTS", False),
             repair_hints=_get_env_bool("ARC3_PERSISTENT_FUNCTIONS_REPAIR_HINTS", False),
         )
+
         action_results = [
             item
             for item in sandbox_result.get("action_results") or []
@@ -7075,7 +7043,7 @@ class ToolAgent:
                         + f"{_transient_clause}"
                         "Each section you write replaces the stored one entirely, "
                         "so restate what is still true, not only what is new. "
-                        "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- choose `.grid`, `.cell(...)`, or `.crop(...)` for exact layouts, `current_frame.segmentation4` for edge-connected same-color objects, `current_frame.segmentation8` when diagonal connectivity matters, or `frame_diff(...)` for changes -- "
+                        "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- use `current_frame.segmentation` as the primary view, and `.ascii` only for a small specific region -- "
                         "compare `previous_frame` to `current_frame` for the most recent change, "
                         "derives a compact board summary, programs a small search or scorer over candidate actions or short sequences, "
                         "then call `action(actions)` inside Python with the best valid action or ordered batch that your code selected. "
