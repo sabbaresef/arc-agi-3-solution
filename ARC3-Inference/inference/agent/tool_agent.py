@@ -731,8 +731,8 @@ def _yield_resume_tone() -> str:
 
 _YIELD_RESUME_PROMPT_NO_TOOLS = (
     "You spent the entire turn budget reasoning without calling a tool. Stop "
-    "deliberating and call the `python` tool NOW: inspect "
-    "`current_frame.segmentation4`, then call `action(actions)` with the best "
+    "deliberating and call the `python` tool NOW: inspect the current state with "
+    "the simplest relevant representation, then call `action(actions)` with the best "
     "available action. Acting on a partial model beats another turn of "
     "analysis."
 )
@@ -756,8 +756,8 @@ _YIELD_RESUME_PROMPT_NO_TOOLS_MINIMAL = (
     # so there are no results to continue from and the useful instruction is
     # where to start instead.
     "Your previous exchange produced no tool call and executed no actions. "
-    "Start with the `python` tool: inspect `current_frame.segmentation4`, then "
-    "call `action(actions)` when your evidence supports a choice."
+    "Start with the `python` tool and inspect the current state with the simplest "
+    "relevant representation, then call `action(actions)` when your evidence supports a choice."
 )
 
 _YIELD_RESUME_PROMPT_NO_TOOLS_NEUTRAL = (
@@ -770,8 +770,8 @@ _YIELD_RESUME_PROMPT_NO_TOOLS_NEUTRAL = (
     "You yielded control on the turn time budget without calling a tool. This "
     "is a scheduling interruption, not a signal that your analysis is complete "
     "- but nothing has been executed and the board is unchanged. Start with "
-    "the `python` tool: inspect `current_frame.segmentation4`, then call "
-    "`action(actions)` once your evidence supports a choice."
+    "the `python` tool and inspect the current state with the simplest relevant "
+    "representation, then call `action(actions)` once your evidence supports a choice."
 )
 
 _DEAD_REASONING_STUB = "(previous attempt produced no tool call)"
@@ -1660,7 +1660,8 @@ def _suppress_board_dumps(text: str) -> tuple[str, int]:
         out.append(
             "[BOARD PRINT GUARD] Printing full boards is disallowed and "
             "character counting is unreliable for you. Compute over the grid "
-            "in python (`segmentation4` nodes, slicing, run-length checks, BFS) "
+            "in python using the representation appropriate to the question "
+            "(`grid` slices, `segmentation4`, `segmentation8`, diffs, or search), "
             "and print only coordinates, counts, and small crops."
         )
     return "\n".join(out), suppressed
@@ -2714,9 +2715,10 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
         prompt += (
             " Each turn's message includes an 'Auto frame diff' section summarizing "
             "object-level changes since your previous analyzer turn (it spans all "
-            "actions executed in between, not just the last one). Treat it as ground "
-            "truth for what changed, consult it before acting, and call `frame_diff()` "
-            "in python when you need per-action or full object detail."
+            "actions executed in between, not just the last one). It reports the exact "
+            "net difference between the two displayed frames, not which action caused each "
+            "change and not transient changes that later reverted. Call `frame_diff()` on "
+            "explicit frames or inspect animation data when per-action or transient detail matters."
         )
     if _DIFF_IMAGE and current_grid_image_enabled():
         prompt += (
@@ -3734,14 +3736,12 @@ class ToolAgent:
                 verdict = "RUN COMPLETE"
             elif item.get("level_completed"):
                 verdict = "LEVEL COMPLETED"
-            elif item.get("gameplay_changed") is False:
-                verdict = (
-                    "NO-OP (executed, no change inside the board area)"
-                    if _new_noop_wording()
-                    else "NO-OP (executed, changed nothing)"
-                )
             elif item.get("gameplay_changed") is True:
-                verdict = "effect"
+                verdict = "INTERIOR CHANGE"
+            elif item.get("board_changed"):
+                verdict = "EDGE-ONLY CHANGE (no farther-inward cell changed)"
+            elif item.get("gameplay_changed") is False:
+                verdict = "NO CHANGE"
             else:
                 verdict = "executed"
             entries.extend(f"{name} -> {verdict}" for name in names)
@@ -4898,9 +4898,9 @@ class ToolAgent:
                     lines.append("That sequence changed cells inside the board area.")
                 elif previous_step_summary.get("board_changed"):
                     lines.append(
-                        f"That sequence changed only cells within {border} of the edge "
-                        "(usually a timer or remaining-steps bar) - nothing inside the "
-                        "board area moved."
+                        f"That sequence changed only cells within {border} of the edge; "
+                        "no cell farther inward changed. This is geometric evidence only, "
+                        "not proof that the change was HUD."
                     )
                 else:
                     lines.append("That sequence produced no change anywhere on the board.")
@@ -5188,7 +5188,7 @@ class ToolAgent:
             )
         else:
             lines.append(
-                "Focus on what changed most recently in `history`, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
+                "Focus on what changed most recently in `history`, update the target environment change if needed, and distinguish whole-frame, edge-only, and farther-inward changes before assigning gameplay or HUD meaning."
             )
         lines.extend(
             [
@@ -5721,6 +5721,12 @@ class ToolAgent:
         }
         if "gameplay_changed" in payload:
             compact["gameplay_changed"] = bool(payload.get("gameplay_changed"))
+        if compact.get("gameplay_changed"):
+            compact["change_kind"] = "interior"
+        elif compact.get("board_changed"):
+            compact["change_kind"] = "edge_only"
+        else:
+            compact["change_kind"] = "none"
         executed_actions = payload.get("executed_actions")
         if isinstance(executed_actions, list) and executed_actions:
             compact["executed_actions"] = [str(action).strip() for action in executed_actions if str(action).strip()]
